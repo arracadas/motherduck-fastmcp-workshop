@@ -3,6 +3,8 @@
 FastMCP Gateway runs this file. Its entrypoint setting is `server.py:mcp`.
 """
 
+import logging
+import re
 from collections import Counter, defaultdict
 from statistics import median
 
@@ -10,8 +12,11 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from sf311.data import BY_ID, LOCAL_NAMES, NEIGHBORHOODS, REQUESTS, SERVICES, closest
+from sf311.kit import caller_email
 
 mcp = FastMCP("sf-311")
+
+log = logging.getLogger(__name__)
 
 MAX_ROWS = 50
 STATUSES = ("Open", "Closed")
@@ -55,6 +60,27 @@ def _matching(service: str | None, neighborhood: str | None, status: str | None)
     ]
 
 
+HOUSE_NUMBER = re.compile(r"^(\d+)\s+([^,]+)")
+
+
+def mask_address(address: str) -> str:
+    """Reduce a street address to its block: "994 HARRISON ST, ..." -> "900 block of HARRISON ST".
+
+    Addresses with no house number, such as intersections, stay unchanged.
+    """
+    match = HOUSE_NUMBER.match(address)
+    if not match:
+        return address
+    block = int(match.group(1)) // 100 * 100
+    return f"{block} block of {match.group(2).strip()}"
+
+
+def _as_masked_dict(request) -> dict:
+    row = request.as_dict()
+    row["address"] = mask_address(row["address"])
+    return row
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 def dataset_info() -> dict:
     """Describe the 311 dataset this server answers questions about.
@@ -84,8 +110,10 @@ def search_requests(
 
     Each row is a dict with every field of sf311.data.Request (request_id,
     opened, closed, status, service, subtype, agency, neighborhood,
-    local_name, address, source). All filters are optional and combine with
-    AND; `status` is "Open" or "Closed"; `limit` is 1 to 50 (default 20).
+    local_name, address, source), except that `address` is masked to the
+    block ("900 block of HARRISON ST"); intersection addresses stay as-is.
+    All filters are optional and combine with AND; `status` is "Open" or
+    "Closed"; `limit` is 1 to 50 (default 20).
 
     Use this to show real cases or to find request ids for get_request.
     When the question asks "how many" or "which group is biggest", call
@@ -99,7 +127,7 @@ def search_requests(
         raise ToolError(f"limit must be between 1 and {MAX_ROWS}, got {limit}.")
     rows = _matching(service, neighborhood, status)
     rows.sort(key=lambda r: (r.opened, r.request_id), reverse=True)
-    return [r.as_dict() for r in rows[:limit]]
+    return [_as_masked_dict(r) for r in rows[:limit]]
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -163,13 +191,19 @@ def median_close_hours(
 def get_request(request_id: str) -> dict:
     """Return one 311 request by its id as a dict of all its fields.
 
+    The `address` field is masked to the block ("900 block of HARRISON ST");
+    intersection addresses stay as-is. Every successful lookup is logged
+    with the verified caller's email, or "local" when run outside the gateway.
+
     Use search_requests first to find ids that exist. An unknown id raises
     an error listing no suggestions, because ids are opaque.
     """
     request = BY_ID.get(request_id)
     if request is None:
         raise ToolError(f'No request with id "{request_id}". Find real ids with search_requests.')
-    return request.as_dict()
+    caller = caller_email() or "local"
+    log.info("get_request request_id=%s caller=%s", request_id, caller)
+    return _as_masked_dict(request)
 
 
 if __name__ == "__main__":
