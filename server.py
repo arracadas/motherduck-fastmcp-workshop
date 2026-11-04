@@ -188,6 +188,22 @@ def median_close_hours(
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
+def max_close_hours(service: str | None = None) -> int | None:
+    """Longest time from opened to closed among matching requests, in whole hours.
+
+    Considers only closed requests and returns a single whole-hour number
+    (rounded to the nearest hour); returns None when nothing is closed.
+    `service` uses the exact names from dataset_info.
+
+    Use this for "what is the longest/slowest case" questions. For a typical
+    close time use median_close_hours; for how many, use count_requests.
+    """
+    _check_name(service, "service", SERVICES)
+    hours = [r.hours_to_close for r in _matching(service, None, None) if r.hours_to_close is not None]
+    return round(max(hours)) if hours else None
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
 def get_request(request_id: str) -> dict:
     """Return one 311 request by its id as a dict of all its fields.
 
